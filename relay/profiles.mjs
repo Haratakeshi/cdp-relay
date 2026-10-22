@@ -1,14 +1,33 @@
 // 中継上のブラウザ名 → { app, profile } の対応(profiles.json)と、閉じているプロファイルの窓を開く処理。CLI の open と MCP の browser_open が使う。
 // 拡張は自分のプロファイルのディレクトリを知れないので、--app/--profile で初回起動したときに新しく登録された名前を学習して保存する
-import { readFileSync, writeFileSync } from 'node:fs';
-import { execFile } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const PROFILES_PATH = fileURLToPath(new URL('../profiles.json', import.meta.url));
-export const APPS = { chrome: { app: 'Google Chrome', data: 'Google/Chrome' }, edge: { app: 'Microsoft Edge', data: 'Microsoft Edge' } }; // macOS のアプリ名と User Data の場所
+// アプリ名(macOS の open -a)、User Data の場所、Windows の実行ファイルの候補
+export const APPS = {
+  chrome: { app: 'Google Chrome', data: 'Google/Chrome', winData: 'Google/Chrome/User Data', winExe: ['Google/Chrome/Application/chrome.exe'] },
+  edge: { app: 'Microsoft Edge', data: 'Microsoft Edge', winData: 'Microsoft/Edge/User Data', winExe: ['Microsoft/Edge/Application/msedge.exe'] },
+};
+const WINDOWS = process.platform === 'win32';
+const localState = app => WINDOWS ? join(process.env.LOCALAPPDATA ?? '', APPS[app].winData, 'Local State') : join(homedir(), 'Library/Application Support', APPS[app].data, 'Local State');
+/** Windows: Program Files / Program Files (x86) / ユーザー単位のインストール(LOCALAPPDATA)の順に探す */
+const winExe = app => [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA].filter(Boolean)
+  .flatMap(root => APPS[app].winExe.map(rel => join(root, rel))).find(existsSync);
+
+/** プロファイルの窓を開く。起動中のブラウザには新しいプロセスが引数を引き渡して終了し、既存プロセスがそのプロファイルの窓を開く */
+async function launch(app, profile, front) {
+  const arg = `--profile-directory=${profile}`;
+  if (process.platform === 'darwin') return promisify(execFile)('open', [...(front ? [] : ['-g']), '-na', APPS[app].app, '--args', arg]); // -g: 前面を奪わない
+  if (!WINDOWS) throw new Error(`プロファイルを開く処理はこの OS(${process.platform})に未対応です。ブラウザで手動で開いてください`);
+  const exe = winExe(app);
+  if (!exe) throw new Error(`${APPS[app].app} の実行ファイルが見つかりません(${APPS[app].winExe.join(', ')})`);
+  spawn(exe, [arg], { detached: true, stdio: 'ignore' }).unref(); // Windows では窓が前面に出る(背面で開く方法が無い)
+}
 const LAUNCH_TIMEOUT_MS = 30_000; // プロファイル起動 → 拡張の SW 起動 → 中継登録まで
 const POLL_MS = 500;
 
@@ -16,7 +35,6 @@ export const readProfiles = () => { try { return JSON.parse(readFileSync(PROFILE
 
 /**
  * プロファイルが開いていないと拡張の SW が動かず中継に現れない。そのプロファイルのウィンドウを開いて登録を待つ。
- * 起動中のブラウザには open -n の新プロセスが引数を引き渡して終了し、既存プロセスがそのプロファイルの窓を開く。
  * listNames: 中継に接続中のブラウザ名の配列を返す async 関数。戻り値 { name, already, app, profile }
  */
 export async function openProfile({ name, app, profile, front = false, timeoutMs = LAUNCH_TIMEOUT_MS }, listNames) {
@@ -25,7 +43,7 @@ export async function openProfile({ name, app, profile, front = false, timeoutMs
   if (name && !target) throw new Error(`profiles.json に ${name} がありません。一度 open --app chrome|edge --profile <ディレクトリ名|表示名> で起動すると登録されます`);
   if (!target) {
     if (!APPS[app] || typeof profile !== 'string') throw new Error('open <name> か open --app chrome|edge --profile <ディレクトリ名|表示名> を指定してください');
-    const cache = JSON.parse(readFileSync(join(homedir(), 'Library/Application Support', APPS[app].data, 'Local State'), 'utf8')).profile?.info_cache ?? {};
+    const cache = JSON.parse(readFileSync(localState(app), 'utf8')).profile?.info_cache ?? {};
     const dir = Object.keys(cache).find(d => d === profile || cache[d].name === profile);
     if (!dir) throw new Error(`プロファイルが見つかりません: ${profile}(候補: ${Object.entries(cache).map(([d, v]) => `${d}=${v.name}`).join(', ')})`);
     target = { app, profile: dir };
@@ -35,7 +53,7 @@ export async function openProfile({ name, app, profile, front = false, timeoutMs
   // 対象プロファイルが既に名前と対応付いていて接続中なら何もしない
   const knownName = name ?? Object.entries(known).find(([, p]) => p.app === target.app && p.profile === target.profile)?.[0];
   if (knownName && before.has(knownName)) return { name: knownName, already: true, ...target };
-  await promisify(execFile)('open', [...(front ? [] : ['-g']), '-na', APPS[target.app].app, '--args', `--profile-directory=${target.profile}`]); // -g: 前面を奪わない
+  await launch(target.app, target.profile, front);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const names = await listNames();

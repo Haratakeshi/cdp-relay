@@ -76,6 +76,25 @@ pnpm daemon:uninstall    # 停止して plist を削除
 - `KeepAlive` により強制終了しても即座に再起動する(実測 1 秒)。拡張は再接続のバックオフで自動的に繋ぎ直る
 - 中継を再起動してもブラウザ側の作業は影響を受けない。attach していたタブは detach されるだけ
 
+### Windows(常駐させない)
+
+Windows では中継を常駐させない。`pnpm run setup`(または `pnpm daemon:install`)が中継をバックグラウンドで起動し、
+再起動やログオフの後は、エージェントが最初にツールを使ったときに MCP シムが前回と同じ設定(`relay-<port>.json` に記録した `CDP_RELAY_*`)で起動する。
+拡張は最大 30 秒間隔で再接続するので、その間 `browser_list` に出ないことがある。
+
+```powershell
+pnpm daemon:status       # 中継が応答するか / pid
+pnpm daemon:restart      # 止めて、前回と同じ設定で起動し直す(relay/*.mjs を更新したとき)
+pnpm daemon:uninstall    # 止める
+pnpm daemon:log          # ~/.cdp-relay/relay-9333.log の末尾
+```
+
+- エージェント用のソケットは名前付きパイプ `\\?\pipe\<ユーザーフォルダ>\.cdp-relay\relay-<port>.sock`(Node の net は Windows でパイプ名しか受けないため)。
+  状態ファイル・ログ・クライアント認証のトークンは `~/.cdp-relay/` に置く
+- 閉じたプロファイルを開く処理(`browser_open`・CLI の `open`)は、`%LOCALAPPDATA%` の `Local State` からプロファイルを探し、
+  `chrome.exe` / `msedge.exe` を `--profile-directory` 付きで起動する。macOS と違い、開いた窓は前面に出る
+- [事実 2026-10-22] GitHub Actions の windows-latest(ヘッドレスの Chrome)で E2E-8 / 13 / 15 / 1 / 2 / 3 を確認。実機の Windows での確認は利用者に依頼している
+
 常駐させると、複数の AI エージェントが同時に別々のブラウザへ接続できる。
 同じタブに複数のクライアントが繋いだ場合は参照カウントで attach を共有し、最後の 1 つが離れたときだけ detach する
 (エージェントのタブは detach せず、中継が付け直して監視を続ける。下記「自動処理」)。
@@ -332,6 +351,7 @@ AI エージェントには上の MCP(プラグイン)を使う。CLI は MCP �
 
 ```bash
 pnpm test:e2e        # E2E-1〜4, 6〜15(約 2.5 分)。テストは 94xx 帯を使うので常駐中継(9333)と衝突しない
+node test/run.mjs e2e-relay e2e-agent   # テストを絞る(test:e2e の実体。OS を問わず動く)
 pnpm test:lifetime   # E2E-5 Service Worker 寿命(約 3.5 分)
 HEADED=1 pnpm test:e2e   # ウィンドウを表示して実行(目視デバッグ用)
 pnpm exp:infobar     # インフォバー観察。これだけは画面つきで起動する(ブラウザ UI を撮るため)
@@ -402,4 +422,5 @@ E2E-8 は旧拡張(0.1.0 相当のスタブ)に新しい中継が繋いだとき
 | E2E-10〜13 を Edge で実行 | 未実行(E2E-1/2/3/6 は Edge 152 で PASS) |
 | ディスプレイ消灯・画面ロック中の動作 | 未確認 |
 | `ServiceWorker.stopWorker` で強制停止すると `starting` のまま復帰しない(test/debug-sw.mjs) | 自然なアイドル終了は 30 秒周期の alarms が防いでおり、100 秒以上の無通信でも生存した |
-| Linux / Windows | 未対応(常駐化とプロファイルを開く処理が macOS 専用) |
+| Windows の実機 | CI(windows-latest、ヘッドレス)で E2E-8 / 13 / 15 / 1 / 2 / 3 のみ。プロファイルを開く処理、画面つきの実ブラウザ、名前付きパイプの権限は未確認 |
+| Linux | 未対応(常駐化とプロファイルを開く処理が無い) |

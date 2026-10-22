@@ -20,7 +20,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { APPS, openProfile, readProfiles as profiles } from './relay/profiles.mjs';
-import { clientAuthHeaders } from './relay/client-token.mjs';
+import { clientAuthHeaders } from './relay/paths.mjs';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CDP_RELAY_PORT || 9333);

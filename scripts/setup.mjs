@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 // 導入と診断を 1 つにしたコマンド。何度実行してもよい(足りないものだけを入れ、状態と次の一手を表示する)。
 //   pnpm run setup [-- --port 9333] [-- --token <CDP_RELAY_TOKEN>] [-- --client-auth]
-// 1. 前提(macOS / Node 22+ / 依存)を確かめる
-// 2. 常駐中継(LaunchAgent)が未導入・別の場所のリポジトリを指していれば、このリポジトリで入れ直す
+// 1. 前提(macOS か Windows / Node 22+ / 依存)を確かめる
+// 2. macOS: 常駐中継(LaunchAgent)が未導入・別の場所のリポジトリを指していれば、このリポジトリで入れ直す
+//    Windows: 常駐化はしない。中継が動いていなければ起動する(以後、落ちていれば MCP が使うときに起こす)
 // 3. 中継が応答するのを待ち、接続中のブラウザと拡張のバージョンを確かめる
 // 4. エージェント(MCP)への登録方法を表示する
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LABEL, stableNode } from './daemon.mjs';
-import { clientAuthHeaders, clientTokenPath } from '../relay/client-token.mjs';
+import { clientAuthHeaders, clientTokenPath, statePath } from '../relay/paths.mjs';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const argv = process.argv.slice(2);
@@ -20,7 +20,9 @@ const PORT = Number(opt('port') ?? process.env.CDP_RELAY_PORT ?? 9333);
 const SERVER = join(REPO, 'relay/server.mjs');
 const EXTENSION = join(REPO, 'extension');
 const SHIM = join(REPO, 'plugin/cdp-relay/mcp/server.mjs');
-const INFO = join(homedir(), '.cdp-relay', `relay-${PORT}.json`);
+const INFO = statePath('.json', PORT);
+const WINDOWS = process.platform === 'win32';
+const RESTART = '`pnpm daemon:restart`';
 const EXT_VERSION = JSON.parse(readFileSync(join(EXTENSION, 'manifest.json'), 'utf8')).version;
 const WAIT_MS = 10_000;
 const RECONNECT_MS = 35_000; // 拡張の再接続の間隔は最大 30 秒(extension/background.js の backoff)
@@ -35,8 +37,8 @@ const newer = (a, b) => { const [x, y] = [a, b].map(v => String(v).split('.').ma
 const browsers = () => fetch(`http://127.0.0.1:${PORT}/browsers`, { headers: clientAuthHeaders(PORT) }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
 
 console.log(`cdp-relay setup(${REPO})\n\n[前提]`);
-if (process.platform !== 'darwin') fail(`macOS 専用です(この OS: ${process.platform})`, '中継だけなら `pnpm relay` で手動起動できますが、常駐化とプロファイルを開く機能は macOS のみ対応です');
-ok(`macOS`);
+if (!WINDOWS && process.platform !== 'darwin') fail(`この OS(${process.platform})は未対応です`, '中継だけなら `pnpm relay` で手動起動できますが、常駐化とプロファイルを開く機能は macOS / Windows のみ対応です');
+ok(WINDOWS ? 'Windows' : 'macOS');
 const major = Number(process.versions.node.split('.')[0]);
 if (major < 22) fail(`Node ${process.versions.node}(22 以上が必要)`, 'Node 22 以上を入れてから再実行してください');
 ok(`Node ${process.versions.node}`);
@@ -44,25 +46,27 @@ if (!existsSync(join(REPO, 'node_modules/ws'))) fail('依存が未インスト�
 ok('依存(node_modules)');
 if (REPO.startsWith('/Volumes/')) next.push(`リポジトリが外付けボリューム(${REPO})にあります。未マウントの間は常駐中継が起動できません。内蔵ディスク(例 ~/cdp-relay)への配置を勧めます`);
 
-console.log('\n[常駐中継]');
+console.log(WINDOWS ? '\n[中継]' : '\n[常駐中継]');
 const running = readInfo();
 const before = await browsers().catch(() => null); // 入れ直す前に繋がっていたブラウザ(入れ直した後、再接続を待つ)
 const reachable = await fetch(`http://127.0.0.1:${PORT}/browsers`).then(() => true, () => false); // 401(クライアント認証あり)も「動いている」。入れ直して認証を外さない
-if (reachable && running?.server === SERVER && running.launchdLabel === LABEL) ok(`LaunchAgent ${LABEL} で稼働中(127.0.0.1:${PORT})`);
+if (reachable && running?.server === SERVER && (WINDOWS || running.launchdLabel === LABEL)) ok(WINDOWS ? `稼働中(127.0.0.1:${PORT}、pid ${running.pid})` : `LaunchAgent ${LABEL} で稼働中(127.0.0.1:${PORT})`);
+else if (WINDOWS && reachable) fail(`ポート ${PORT} を別の中継(${running?.server ?? '不明'}、pid ${running?.pid ?? '不明'})が使っています`, 'その中継を止めてから(そのリポジトリで `pnpm daemon:uninstall`)再実行してください');
 else {
   if (reachable && running?.server && running.server !== SERVER) console.log(`  … ポート ${PORT} の中継は別の場所(${running.server})から動いています。このリポジトリで入れ直します`);
   const args = ['install', '--port', String(PORT), ...(opt('token') ? ['--token', opt('token')] : []), ...(argv.includes('--client-auth') ? ['--client-auth'] : [])];
   console.log(`  … node scripts/daemon.mjs ${args.join(' ').replace(/--token \S+/, '--token ***')}`);
   execFileSync(process.execPath, [join(REPO, 'scripts/daemon.mjs'), ...args], { stdio: 'inherit' });
   const deadline = Date.now() + WAIT_MS;
-  const fresh = () => readInfo()?.launchdLabel === LABEL && readInfo()?.server === SERVER;
+  const fresh = () => readInfo()?.server === SERVER && (WINDOWS || readInfo()?.launchdLabel === LABEL);
   while (Date.now() < deadline && !(fresh() && await browsers().then(() => true, () => false))) await sleep(300);
   if (!fresh()) fail(`中継が ${WAIT_MS / 1000} 秒以内に起動しませんでした`, '`pnpm daemon:log` でログを確認してください');
-  ok(`常駐中継を導入して起動しました(127.0.0.1:${PORT})`);
+  ok(WINDOWS ? `中継を起動しました(127.0.0.1:${PORT})` : `常駐中継を導入して起動しました(127.0.0.1:${PORT})`);
 }
+if (WINDOWS) next.push('Windows では中継を常駐させません。ログオン後は、エージェントが最初に使うときに MCP が中継を起動します(拡張が繋がるまで最大 30 秒ほどかかります)');
 
 console.log('\n[ブラウザ(拡張機能)]');
-let list = await browsers().catch(e => fail(`中継に拒否されました(${e.message})`, `クライアント認証が有効です。トークンのファイル ${clientTokenPath(PORT)} を確認してください(作り直すなら消してから \`pnpm daemon:restart\`)`));
+let list = await browsers().catch(e => fail(`中継に拒否されました(${e.message})`, `クライアント認証が有効です。トークンのファイル ${clientTokenPath(PORT)} を確認してください(作り直すなら消してから ${RESTART})`));
 const missing = () => (before ?? []).filter(b => !list.some(x => x.name === b.name));
 if (missing().length) {
   console.log(`  … 拡張の再接続を待っています(${missing().map(b => b.name).join(', ')}、最大 ${RECONNECT_MS / 1000} 秒)`);
@@ -87,7 +91,7 @@ if (!online.length) {
 
 console.log('\n[エージェントへの登録]');
 let claudeHas = false;
-try { claudeHas = /cdp-relay@cdp-relay(?![\w-])/.test(execFileSync('claude', ['plugin', 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); } catch {}
+try { claudeHas = /cdp-relay@cdp-relay(?![\w-])/.test(execFileSync('claude', ['plugin', 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], shell: WINDOWS })); } catch {} // Windows の claude は .cmd のことがある
 if (claudeHas) ok('Claude Code: プラグイン cdp-relay@cdp-relay を導入済み');
 else console.log(`  Claude Code:\n    claude plugin marketplace add ${REPO}\n    claude plugin install cdp-relay@cdp-relay`);
 console.log(`  そのほかの MCP クライアント(Codex / Gemini CLI / Cursor / Antigravity など)には stdio の MCP サーバーとして登録:\n    ${JSON.stringify({ mcpServers: { 'cdp-relay': { command: stableNode(), args: [SHIM] } } })}`);

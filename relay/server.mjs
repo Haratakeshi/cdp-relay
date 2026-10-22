@@ -26,7 +26,7 @@ import { serveBrowserFacade } from './facade.mjs';
 import { Autopilot } from './autopilot.mjs';
 import { getPolicy, POLICY_PATH } from './policy.mjs';
 import { serveAgent } from './agent.mjs';
-import { agentSocketPath, clientTokenPath, ensureClientToken } from './client-token.mjs';
+import { agentSocketPath, clientTokenPath, ensureClientToken, statePath } from './paths.mjs';
 
 const PORT = Number(process.env.CDP_RELAY_PORT || 9333);
 const HOST = process.env.CDP_RELAY_HOST || '127.0.0.1';
@@ -42,6 +42,7 @@ const normalizeHost = h => {
 };
 const ALLOWED_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', ...(process.env.CDP_RELAY_ALLOWED_HOSTS ?? '').split(',').map(normalizeHost).filter(Boolean)]);
 // エージェント(MCP シム)用の Unix ドメインソケット。ファイル権限(ディレクトリ 700 / ソケット 600)がローカルの認証になる。中継ポートごとに別のパス
+const WINDOWS = process.platform === 'win32';
 const AGENT_SOCKET = agentSocketPath(PORT);
 // TCP 側のクライアント認証(任意)。有効なら HTTP / WS / 専用ポートに Authorization: Bearer <トークン> を求める。/extension は CDP_RELAY_TOKEN で別に検証する
 const CLIENT_TOKEN = process.env.CDP_RELAY_CLIENT_AUTH === '1' ? ensureClientToken(PORT) : null;
@@ -597,14 +598,18 @@ async function servePage(link, tabId, ws) {
 server.listen(PORT, HOST, () => {
   log(`cdp-relay listening on http://${HOST}:${PORT} (extension token ${TOKEN ? 'required' : 'not set'}, client auth ${CLIENT_TOKEN ? `required, token file ${clientTokenPath(PORT)}` : 'off'})`); getPolicy(log);
   // TCP のポートを取れた(= 同じポートの中継は他にいない)ので、前回の中継が残したソケットファイルは消してよい
-  mkdirSync(dirname(AGENT_SOCKET), { recursive: true, mode: 0o700 });
-  rmSync(AGENT_SOCKET, { force: true });
+  // (Windows の名前付きパイプはファイルとして残らず、所有プロセスの終了で消える。権限は既定の ACL: Microsoft の CreateNamedPipe の説明では作成者・管理者がフル、Everyone は読み取りのみ)
+  const INFO = statePath('.json', PORT);
+  mkdirSync(dirname(INFO), { recursive: true, mode: 0o700 });
+  if (!WINDOWS) rmSync(AGENT_SOCKET, { force: true });
   const agentServer = net.createServer(conn => serveAgent(conn, { links, log }));
-  agentServer.listen(AGENT_SOCKET, () => { chmodSync(AGENT_SOCKET, 0o600); log(`agent socket ${AGENT_SOCKET}`); });
-  // MCP シムが、中継が落ちているときに起こし直すための情報(launchd の常駐なら kickstart、手で起動したものなら同じ node で起動し直す)。
+  agentServer.listen(AGENT_SOCKET, () => { if (!WINDOWS) chmodSync(AGENT_SOCKET, 0o600); log(`agent socket ${AGENT_SOCKET}`); });
+  // MCP シムが、中継が落ちているときに起こし直すための情報(launchd の常駐なら kickstart、それ以外は同じ node・同じ CDP_RELAY_* の設定で起動し直す。
+  // 設定を引き継がないと、クライアント認証やトークン付きで起動した中継が、起こし直したときに認証なしに戻る)。
   // launchd は起動したジョブの環境変数 XPC_SERVICE_NAME にラベルを入れる(手で起動したシェルでは "0" か未設定)
   const label = process.env.XPC_SERVICE_NAME;
-  writeFileSync(AGENT_SOCKET.replace(/\.sock$/, '.json'), JSON.stringify({ port: PORT, pid: process.pid, node: process.execPath, server: fileURLToPath(import.meta.url), ...(label && label !== '0' ? { launchdLabel: label } : {}) }, null, 1) + '\n', { mode: 0o600 });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('CDP_RELAY_')));
+  writeFileSync(INFO, JSON.stringify({ port: PORT, pid: process.pid, node: process.execPath, server: fileURLToPath(import.meta.url), env, ...(label && label !== '0' ? { launchdLabel: label } : {}) }, null, 1) + '\n', { mode: 0o600 });
   agentServer.on('error', e => log(`agent socket ${AGENT_SOCKET} unavailable: ${e.message}`));
 });
 // policy.json の permissions が変わったら、接続中のブラウザへ適用し直す(他の項目は参照のたびに読み直している)

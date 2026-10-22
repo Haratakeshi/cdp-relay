@@ -1,26 +1,32 @@
 #!/usr/bin/env node
 // cdp-relay MCP サーバー(stdio)。依存なし(Node 22 の標準モジュールだけ)なので、プラグインのディレクトリだけをコピーしても動く。
-// 役割は薄いシム: MCP の tools/call を、常駐中継の Unix ドメインソケット(~/.cdp-relay/relay-<port>.sock、0600)上のセッションへ渡す。
+// 役割は薄いシム: MCP の tools/call を、中継のエージェント用ソケット(~/.cdp-relay/relay-<port>.sock、0600。Windows は同じパスを名前に含む名前付きパイプ)上のセッションへ渡す。
 // - 中継への接続は最初のツール呼び出しまで遅らせる(プラグインを有効にしただけでは何もしない)
 // - この MCP プロセス 1 つ = 中継のセッション 1 つ。エージェントが終了して stdin が閉じると接続が切れ、中継がタブを人に引き渡して detach する
 // - session_end の後は接続を閉じ、次のツール呼び出しで新しいセッションを始める
 // - 中継が再起動したら繋ぎ直し、開いていたタブのハンドルを引き継ぐ(restore)
-// - 中継が動いていなければ起こす(launchd の常駐なら kickstart、手で起動した中継なら同じ node で起動し直す。情報は中継が relay-<port>.json に残す)
+// - 中継が動いていなければ起こす(launchd の常駐なら kickstart、それ以外は前回と同じ node・同じ CDP_RELAY_* の設定で起動。情報は中継が relay-<port>.json に残す。
+//   一度も起動していなければ、このシムが clone の中(plugin/cdp-relay/mcp/)にあるときに限り、隣の relay/server.mjs を起動する)
 import net from 'node:net';
 import { spawn, execFile } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, openSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, isAbsolute } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const VERSION = '0.4.0';
 const PORT = Number(process.env.CDP_RELAY_PORT || 9333);
-const SOCKET = process.env.CDP_RELAY_SOCKET || join(homedir(), '.cdp-relay', `relay-${PORT}.sock`);
+// パスの規則は relay/paths.mjs と同じ(このシムは依存なしで動かすため複製している)
+const SOCKET_FILE = resolve(process.env.CDP_RELAY_SOCKET || join(homedir(), '.cdp-relay', `relay-${PORT}.sock`));
+const SOCKET = process.platform === 'win32' ? `\\\\?\\pipe\\${SOCKET_FILE}` : SOCKET_FILE;
+const statePath = ext => `${SOCKET_FILE.replace(/\.sock$/, '')}${ext}`;
+const REPO_SERVER = resolve(dirname(fileURLToPath(import.meta.url)), '../../../relay/server.mjs'); // clone から直接使っているときの中継
 const START_TIMEOUT_MS = 15_000; // 中継を起こしてからソケットが開くまで
 const CALL_TIMEOUT_MS = 120_000; // 1 回のツール呼び出しの上限(act の待機を含む)
 const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const log = (...a) => process.stderr.write(`[cdp-relay-mcp] ${a.join(' ')}\n`); // stdout は JSON-RPC 専用
 
-const INSTRUCTIONS = `cdp-relay operates the user's REAL, logged-in Chrome/Edge profiles on this Mac (one "browser" per profile).
+const INSTRUCTIONS = `cdp-relay operates the user's REAL, logged-in Chrome/Edge profiles on this computer (one "browser" per profile).
 
 Workflow: browser_list → browser_open if the one you need is offline → tab_open (your own new tab) → snapshot → act → read / screenshot to check the result.
 - Work in your own tabs. Use tab_adopt only when the user points you at an existing tab; never touch other tabs.
@@ -74,21 +80,25 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /** 中継を起こす。launchd の常駐ならそのジョブを kickstart、それ以外は前回の中継と同じ node / server.mjs で起動する */
 async function startRelay() {
-  let info;
-  try { info = JSON.parse(readFileSync(SOCKET.replace(/\.sock$/, '.json'), 'utf8')); }
-  catch { throw new Error(`cdp-relay is not running and has never been started on port ${PORT} (no ${SOCKET}). Set it up once: run "pnpm run setup" in your clone of https://github.com/Haratakeshi/cdp-relay (see INSTALL.md)`); }
-  if (info.launchdLabel) {
+  let info = null;
+  try { info = JSON.parse(readFileSync(statePath('.json'), 'utf8')); } catch {}
+  if (!info && existsSync(REPO_SERVER)) info = { node: process.execPath, server: REPO_SERVER }; // 一度も起動していない(Windows は常駐しないのでここが入口)
+  if (!info) throw new Error(`cdp-relay is not running and has never been started on port ${PORT} (no ${statePath('.json')}). Set it up once: run "pnpm run setup" in your clone of https://github.com/Haratakeshi/cdp-relay (see INSTALL.md)`);
+  if (info.launchdLabel && process.platform === 'darwin') {
     log(`relay not reachable; launchctl kickstart ${info.launchdLabel}`);
     await new Promise(r => execFile('launchctl', ['kickstart', `gui/${process.getuid()}/${info.launchdLabel}`], () => r()));
   } else {
     log(`relay not reachable; starting ${info.server}`);
-    const logDir = join(homedir(), '.cdp-relay'); mkdirSync(logDir, { recursive: true });
-    const out = openSync(join(logDir, `relay-${PORT}.log`), 'a');
-    spawn(info.node, [info.server], { detached: true, stdio: ['ignore', out, out], env: { ...process.env, CDP_RELAY_PORT: String(PORT) } }).unref();
+    const logFile = statePath('.log'); mkdirSync(dirname(logFile), { recursive: true });
+    const out = openSync(logFile, 'a');
+    // 前回の中継の CDP_RELAY_* をそのまま使う(このプロセスの CDP_RELAY_* は混ぜない。ソケットの場所だけはこのシムに合わせる)
+    const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('CDP_RELAY_')));
+    const env = { ...base, ...info.env, CDP_RELAY_PORT: String(PORT), ...(process.env.CDP_RELAY_SOCKET ? { CDP_RELAY_SOCKET: process.env.CDP_RELAY_SOCKET } : {}) };
+    spawn(info.node, [info.server], { detached: true, windowsHide: true, stdio: ['ignore', out, out], env }).unref();
   }
   const deadline = Date.now() + START_TIMEOUT_MS;
   while (Date.now() < deadline) { try { return await tryConnect(); } catch { await sleep(300); } }
-  throw new Error(`cdp-relay did not come up within ${START_TIMEOUT_MS}ms (socket ${SOCKET})`);
+  throw new Error(`cdp-relay did not come up within ${START_TIMEOUT_MS}ms (socket ${SOCKET}; log ${statePath('.log')}). Run "pnpm run setup" in the cdp-relay clone`);
 }
 
 async function ensureConn() {

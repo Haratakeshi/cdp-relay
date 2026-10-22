@@ -9,6 +9,7 @@ import { readProfiles, openProfile } from './profiles.mjs';
 
 const CDP_TIMEOUT_MS = 10_000;     // 1 コマンドの上限(ダイアログで固まったタブに CALL_TIMEOUT 60 秒も待たせない)
 const NAV_TIMEOUT_MS = 20_000;     // goto / クリック後の読み込み完了待ちの上限
+const WAKE_TIMEOUT_MS = 2_000;     // 撮影前にスクリーンキャストの最初のフレームを待つ上限(wakeRenderer)
 const WAIT_TIMEOUT_MS = 10_000;    // wait_for の既定
 const SETTLE_MS = 150;             // クリック・キー入力の後、遷移が始まるかを見る時間
 const POLL_MS = 200;               // wait_for の確認間隔
@@ -228,6 +229,21 @@ class Session {
     const typed = text !== undefined && !(modifiers & (MODIFIERS.Control | MODIFIERS.Meta)); // ショートカットでは文字を入力しない
     await this.cdp(t, 'Input.dispatchKeyEvent', { type: typed ? 'keyDown' : 'rawKeyDown', key, code, windowsVirtualKeyCode: keyCode, modifiers, ...(typed ? { text, unmodifiedText: text } : {}) });
     await this.cdp(t, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: keyCode, modifiers });
+  }
+  /**
+   * 撮影の前に描画を起こす。Windows では背面タブの Page.captureScreenshot がフレームを待ったまま止まり、直前の撮影や遷移の直後には
+   * 20 秒でタイムアウトする(CI の windows-latest で実測。前面タブと macOS では起きない)。スクリーンキャストを始めて最初のフレームを受け取ってから
+   * 撮ると、表示範囲・要素の範囲・ページ全体のどれも約 50ms で撮れた(test/exp-screenshot-background.mjs)。フレームが来なくても撮影は試す
+   */
+  async wakeRenderer(t) {
+    let fn;
+    const frame = new Promise(res => { fn = (ev, m) => { if (ev === 'cdp.event' && m.tabId === t.tabId && !m.sessionId && m.method === 'Page.screencastFrame') res(m.params.sessionId); }; });
+    t.link.on(fn);
+    try {
+      await this.cdp(t, 'Page.startScreencast', { format: 'jpeg', quality: 10, everyNthFrame: 1 });
+      const sessionId = await withTimeout(frame, WAKE_TIMEOUT_MS, 'Page.screencastFrame').catch(() => null);
+      if (sessionId !== null) await this.cdp(t, 'Page.screencastFrameAck', { sessionId }).catch(() => {});
+    } finally { t.link.off(fn); }
   }
   /** メインフレームの読み込みを見張る(act / goto の間だけ) */
   watchNav(t) {
@@ -537,8 +553,11 @@ class Session {
         const { cssContentSize: c } = await this.cdp(t, 'Page.getLayoutMetrics');
         Object.assign(params, { captureBeyondViewport: true, clip: { x: 0, y: 0, width: c.width, height: c.height, scale: 1 } });
       }
-      const { data } = await this.cdp(t, 'Page.captureScreenshot', params, NAV_TIMEOUT_MS);
-      return { image: { data, mimeType: `image/${format}` }, ...(await this.info(t)) };
+      await this.wakeRenderer(t);
+      try {
+        const { data } = await this.cdp(t, 'Page.captureScreenshot', params, NAV_TIMEOUT_MS);
+        return { image: { data, mimeType: `image/${format}` }, ...(await this.info(t)) };
+      } finally { await this.cdp(t, 'Page.stopScreencast').catch(() => {}); }
     },
     async eval({ tab, expression, max_chars = EVAL_CHARS }) {
       const t = this.tab(tab);

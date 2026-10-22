@@ -45,7 +45,7 @@ export function getPolicy(log) {
   try { st = statSync(POLICY_PATH); } catch { if (cache.mtimeMs !== null) log(`policy: ${POLICY_PATH} not found, using defaults`); cache = { mtimeMs: null, policy: DEFAULT_POLICY }; return DEFAULT_POLICY; }
   if (st.mtimeMs === cache.mtimeMs) return cache.policy;
   cache.mtimeMs = st.mtimeMs;
-  if (st.mode & 0o077) log(`policy: WARNING ${POLICY_PATH} is mode ${(st.mode & 0o777).toString(8)}; it may hold credentials, chmod 600 it`);
+  if (process.platform !== 'win32' && st.mode & 0o077) log(`policy: WARNING ${POLICY_PATH} is mode ${(st.mode & 0o777).toString(8)}; it may hold credentials, chmod 600 it`);
   let p;
   try { p = JSON.parse(readFileSync(POLICY_PATH, 'utf8')); } catch (e) { log(`policy: WARNING cannot read ${POLICY_PATH} (${e.message}); keeping the previous policy`); return cache.policy; }
   if (!isObj(p)) { log(`policy: WARNING ${POLICY_PATH} is not a JSON object; keeping the previous policy`); return cache.policy; }

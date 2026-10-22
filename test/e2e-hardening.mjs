@@ -12,11 +12,12 @@
 //    古いページ WS の遅れた close が、後から繋いだクライアントの参照を減らさない(ダイアログを奪わない)/ 次のクライアントの接続で監視が戻る
 //  - クライアント認証(CDP_RELAY_CLIENT_AUTH=1): TCP 側の HTTP / WS / 近道 API / 専用ポートはヘッダのトークンなしで 401。/extension は対象外。
 //    トークンは 0600 のファイルに自動生成して再起動後も同じ値、ログに出さない、CLI は自動で読む
+//  - MCP シムが中継を起こし直すときは前回の CDP_RELAY_* を引き継ぐ(認証が外れない)。一度も起動していなければ clone の中継を起動する
 import http from 'node:http';
 import { WebSocket } from 'ws';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { chmodSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { startRelay, RELAY, RELAY_PORT, sleep, assert, artifactsDir } from './harness.mjs';
 
 const out = artifactsDir('e2e-hardening');
@@ -218,7 +219,7 @@ try {
   const ext5 = stubExtension('ca', { port: DED }); await ext5.opened; await sleep(400);
   summary.extensionWithoutClientToken = 'open';
   const token = readFileSync(tokenFile, 'utf8').trim();
-  assert(/^[0-9a-f]{64}$/.test(token) && (statSync(tokenFile).mode & 0o777) === 0o600, 'トークンを 0600 のファイルに自動生成する(拡張の接続口 /extension はクライアント用トークンなしで繋がる)');
+  assert(/^[0-9a-f]{64}$/.test(token) && (process.platform === 'win32' || (statSync(tokenFile).mode & 0o777) === 0o600), 'トークンを 0600 のファイルに自動生成する(Windows は mode が無く、ユーザーフォルダの ACL で守る。拡張の接続口 /extension はクライアント用トークンなしで繋がる)');
   const bearer = { authorization: `Bearer ${token}` };
   const wsBase = RELAY.replace('http', 'ws');
   const denied = {
@@ -252,9 +253,32 @@ try {
   assert(readFileSync(tokenFile, 'utf8').trim() === token && await httpStatus('/browsers', bearer) === 200, '中継を再起動しても同じトークンを使う(クライアントの設定を変えなくてよい)');
   assert(!logSince().includes(token), '中継ログにトークンを出さない');
   ext5.ws.close();
+  relay.stop(); await sleep(300);
+
+  // --- MCP シムが中継を起こし直す: 前回の CDP_RELAY_* を引き継ぐ / 一度も起動していなければ clone の relay/server.mjs を起動する ---
+  const infoFile = `tmp/agent-${RELAY_PORT}.json`;
+  const shimCall = () => new Promise((res, rej) => { // シム自身はクライアント認証の設定を持たない
+    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('CDP_RELAY_')));
+    const child = spawn(process.execPath, ['plugin/cdp-relay/mcp/server.mjs'], { stdio: ['pipe', 'pipe', 'ignore'], env: { ...env, CDP_RELAY_PORT: String(RELAY_PORT), CDP_RELAY_SOCKET: resolve(`tmp/agent-${RELAY_PORT}.sock`) } });
+    const timer = setTimeout(() => { child.kill(); rej(new Error('shim timed out')); }, 30_000);
+    child.stdout.on('data', d => { if (String(d).includes('"id":2')) { clearTimeout(timer); child.stdin.end(); res(); } });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'e2e', version: '0' } } })}\n`);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'browser_list', arguments: {} } })}\n`);
+  });
+  const killStarted = async () => { const pid = JSON.parse(readFileSync(infoFile, 'utf8')).pid; process.kill(pid); for (let i = 0; i < 50 && await alive(); i++) await sleep(100); };
+  await shimCall();
+  summary.restartedWithoutToken = await httpStatus('/browsers');
+  assert(summary.restartedWithoutToken === 401 && await httpStatus('/browsers', bearer) === 200, `シムが起こし直した中継は、前回のクライアント認証の設定を引き継ぐ(トークンなし ${summary.restartedWithoutToken})`);
+  await killStarted();
+  rmSync(infoFile, { force: true });
+  await shimCall();
+  assert(await httpStatus('/browsers') === 200 && existsSync(infoFile), '一度も起動していなくても(状態ファイルなし)、シムは clone の relay/server.mjs を起動する');
+  await killStarted();
   console.log('E2E-13 PASS');
 } finally {
   writeFileSync(join(out, 'summary.json'), JSON.stringify(summary, null, 1));
   writeFileSync(join(out, 'relay.log'), logSince());
+  // シムが切り離して起動した中継を残さない(途中で失敗したとき)。状態ファイルは最後に起動した中継のもの。ポートが応答しているときだけ止める(古い pid で無関係なプロセスを止めない)
+  try { const { pid } = JSON.parse(readFileSync(`tmp/agent-${RELAY_PORT}.json`, 'utf8')); if (pid !== relay.child.pid && await alive()) process.kill(pid); } catch {}
   relay.stop();
 }

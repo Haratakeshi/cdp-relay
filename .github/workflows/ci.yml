@@ -1,13 +1,15 @@
-# ブラウザを使わないテスト(中継単体・拡張のスタブ)と構文チェック。ブラウザを使う E2E は手元で `pnpm test:e2e`
+# Linux: ブラウザを使わないテスト(中継単体・拡張のスタブ)と構文チェック。
+# Windows: 同じテストに加えて、ランナーの Chrome(ヘッドレス)で MCP(名前付きパイプ)・puppeteer・Playwright の E2E。
+# すべての E2E は手元の macOS で `pnpm test:e2e`
 name: ci
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
   pull_request:
 permissions:
   contents: read
 jobs:
-  test:
+  linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,5 +23,27 @@ jobs:
         run: for f in $(git ls-files '*.mjs' '*.js'); do node --check "$f" || exit 1; done
       - name: manifest
         run: node -e "const m=require('./extension/manifest.json'); for (const p of [...Object.values(m.icons), m.action.default_popup, m.options_page, m.background.service_worker]) require('fs').accessSync('extension/'+p)"
-      - run: node test/e2e-relay.mjs
-      - run: node test/e2e-hardening.mjs
+      - run: node test/run.mjs e2e-relay e2e-hardening
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: relay (no browser)
+        run: node test/run.mjs e2e-relay e2e-hardening
+      - name: MCP agent over named pipe (headless Chrome)
+        run: node test/run.mjs e2e-agent
+      - name: CDP clients (headless Chrome)
+        run: node test/run.mjs e2e-page e2e-puppeteer e2e-playwright
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-logs
+          path: |
+            tmp/*.log
+            tmp/artifacts/

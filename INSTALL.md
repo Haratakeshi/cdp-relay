@@ -6,19 +6,20 @@
 > - ユーザーに「cdp-relay を使いたい」と頼まれたら、この手順を 1 から順に実行してください。各ステップの「完了条件」を満たしてから次へ進みます
 > - 人の操作が必要なのは **ステップ 4(拡張機能の読み込みとブラウザ名の入力)だけ**です。そこでは手順をユーザーに伝えて、終わるまで待ってください
 > - グローバルなツール(Node.js、pnpm)を新たに入れる必要があるときは、入れる前にユーザーの了承を取ってください
-> - この手順は macOS 専用です。ほかの OS では、対応していないことをユーザーに伝えて止まってください
+> - この手順は macOS と Windows に対応しています(Windows は中継を常駐させません)。Linux など、ほかの OS では対応していないことをユーザーに伝えて止まってください
+> - Windows ではコマンドを PowerShell で実行します。`~/cdp-relay` は `$HOME\cdp-relay` と読み替えてください
 
 ## 1. 前提を確かめる
 
 ```bash
-uname -s            # Darwin であること
+uname -s            # Darwin であること(Windows では不要)
 node --version      # v22 以上
 pnpm --version      # 入っていること
 ```
 
-- Node.js が無い・22 未満: `brew install node`(Homebrew がある場合)など。**ユーザーの了承を取ってから**入れる
-- pnpm が無い: `brew install pnpm`、または Node に同梱の `corepack enable pnpm`。**ユーザーの了承を取ってから**入れる
-- Chrome または Edge が入っていること(`/Applications/Google Chrome.app` か `/Applications/Microsoft Edge.app`)
+- Node.js が無い・22 未満: macOS は `brew install node`、Windows は `winget install OpenJS.NodeJS.LTS` など。**ユーザーの了承を取ってから**入れる
+- pnpm が無い: macOS は `brew install pnpm`、どちらの OS でも Node に同梱の `corepack enable pnpm`。**ユーザーの了承を取ってから**入れる
+- Chrome または Edge が入っていること
 
 完了条件: 3 つのコマンドが期待どおりの結果を返す。
 
@@ -36,7 +37,7 @@ pnpm install --frozen-lockfile
 
 完了条件: `~/cdp-relay/node_modules/ws` が存在する。
 
-## 3. 常駐中継を入れる
+## 3. 中継を入れる
 
 ```bash
 cd ~/cdp-relay
@@ -45,15 +46,15 @@ pnpm run setup
 
 `setup` は何度実行しても安全です。足りないものだけを入れ、最後に「次にやること」を表示します。
 
-- ログイン時に自動起動する LaunchAgent(`~/Library/LaunchAgents/io.github.haratakeshi.cdp-relay.plist`)を入れ、中継を `127.0.0.1:9333` で起動します
-- 落ちても自動で再起動します。ログは `~/Library/Logs/cdp-relay.log`
+- **macOS**: ログイン時に自動起動する LaunchAgent(`~/Library/LaunchAgents/io.github.haratakeshi.cdp-relay.plist`)を入れ、中継を `127.0.0.1:9333` で起動します。落ちても自動で再起動します。ログは `~/Library/Logs/cdp-relay.log`
+- **Windows**: 常駐はさせず、中継をバックグラウンドで起動します。再起動やログオフの後は、エージェントが最初に使うときに MCP が同じ設定で起動します(拡張が繋がるまで最大 30 秒ほど)。ログは `~/.cdp-relay/relay-9333.log`
 
-完了条件: 出力の「[常駐中継]」に ✔ が出る。この時点では「[ブラウザ(拡張機能)]」は ✖ で正常です。
+完了条件: 出力の「[常駐中継]」(Windows は「[中継]」)に ✔ が出る。この時点では「[ブラウザ(拡張機能)]」は ✖ で正常です。
 
 ## 4. 拡張機能を読み込む(人の操作)
 
 > **AI エージェントへ**: Chrome の仕様で、拡張機能の読み込みはコマンドからできません。以下をユーザーに伝えて、終わったら知らせてもらってください。
-> `open ~/cdp-relay/extension` で Finder に拡張機能のフォルダを開いておくと、ユーザーが選びやすくなります。
+> `open ~/cdp-relay/extension`(Windows は `explorer $HOME\cdp-relay\extension`)でフォルダを開いておくと、ユーザーが選びやすくなります。
 
 使いたいブラウザ(プロファイル)ごとに、次を行います。
 
@@ -84,7 +85,7 @@ GitHub から直接入れることもできます(`claude plugin marketplace add
 
 ### そのほかの MCP クライアント(Codex / Gemini CLI / Cursor / Antigravity など)
 
-stdio の MCP サーバーとして、次を登録します。`pnpm run setup` の出力に、この Mac の絶対パスを入れた設定が表示されます。
+stdio の MCP サーバーとして、次を登録します。`pnpm run setup` の出力に、このコンピューターの絶対パスを入れた設定が表示されます。
 
 ```json
 {
@@ -97,7 +98,7 @@ stdio の MCP サーバーとして、次を登録します。`pnpm run setup` �
 }
 ```
 
-- GUI アプリから起動されるクライアントは PATH に node が無いことがあるので、`command` は node の絶対パス(`which node`)にします
+- GUI アプリから起動されるクライアントは PATH に node が無いことがあるので、`command` は node の絶対パス(macOS は `which node`、Windows は `(Get-Command node).Source`)にします
 - 中継を 9333 以外のポートで動かしたときだけ `"env": {"CDP_RELAY_PORT": "<port>"}` を足します
 - エージェントへの指針(HumanGate、タブの後始末)は MCP の初期化時にサーバーから伝わります。スキルの仕組みがあるクライアントでは
   [plugin/cdp-relay/skills/cdp-relay/SKILL.md](plugin/cdp-relay/skills/cdp-relay/SKILL.md) をスキルとして登録するとより確実です
@@ -134,10 +135,10 @@ pnpm run setup             # 拡張の版が古ければ、更新コマンドが
 
 ```bash
 cd ~/cdp-relay
-pnpm daemon:uninstall                         # 常駐中継を止めて LaunchAgent を削除
+pnpm daemon:uninstall                         # 中継を止める(macOS は LaunchAgent も削除)
 claude plugin uninstall cdp-relay@cdp-relay   # Claude Code を使っている場合
 claude plugin marketplace remove cdp-relay
-rm -rf ~/.cdp-relay                           # ソケットと状態ファイル
+rm -rf ~/.cdp-relay                           # ソケットと状態ファイル(Windows は Remove-Item -Recurse $HOME\.cdp-relay)
 ```
 
 各ブラウザの `chrome://extensions` から CDP Relay Bridge を削除し、最後に `~/cdp-relay` を削除します。

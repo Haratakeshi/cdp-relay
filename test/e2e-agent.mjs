@@ -121,7 +121,8 @@ try {
   const big = await a.tool('snapshot', { tab: t1, mode: 'full', max_chars: 300 });
   assert(big.text.length < 450 && /truncated/.test(big.text), 'F13 snapshot は max_chars で切る');
   const shot = await a.rpc('tools/call', { name: 'screenshot', arguments: { tab: t1 } });
-  assert(shot.result.content.some(c => c.type === 'image' && c.mimeType === 'image/jpeg' && c.data.length > 1000), 'screenshot は MCP の画像で返る');
+  const shotSeen = JSON.stringify({ isError: shot.result.isError, content: shot.result.content.map(c => c.type === 'image' ? { type: c.type, mimeType: c.mimeType, length: c.data.length } : { type: c.type, text: c.text?.slice(0, 200) }) });
+  assert(shot.result.content.some(c => c.type === 'image' && c.mimeType === 'image/jpeg' && c.data.length > 1000), `screenshot は MCP の画像で返る(${shotSeen})`);
   const shotPath = join(ART, 'shot.png');
   await a.tool('screenshot', { tab: t1, format: 'png', path: shotPath });
   assert(existsSync(shotPath), 'screenshot の path 指定でファイルに保存');

@@ -9,7 +9,7 @@
 
 <p align="center">
 <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-0f9d8f"></a>
-<img alt="macOS" src="https://img.shields.io/badge/platform-macOS-2b2d6e">
+<img alt="macOS | Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-2b2d6e">
 <img alt="Node 22+" src="https://img.shields.io/badge/node-%3E%3D22-2b2d6e">
 <img alt="MCP" src="https://img.shields.io/badge/MCP-ready-ff6b5b">
 </p>
@@ -38,9 +38,9 @@
    │ MCP(stdio)
    ▼
  plugin/cdp-relay/mcp/server.mjs … 依存なしのシム
-   │ Unix ソケット ~/.cdp-relay/relay-9333.sock(0600)
+   │ Unix ソケット ~/.cdp-relay/relay-9333.sock(0600。Windows は名前付きパイプ)
    ▼
- relay/server.mjs … 常駐中継(LaunchAgent、127.0.0.1:9333)        ← puppeteer / Playwright も CDP で接続可
+ relay/server.mjs … 中継(macOS は LaunchAgent で常駐、127.0.0.1:9333)  ← puppeteer / Playwright も CDP で接続可
    │ WebSocket
    ▼
  extension/ … 拡張機能「CDP Relay Bridge」(プロファイルごとに 1 つ、chrome.debugger)
@@ -48,7 +48,7 @@
 
 ## 必要なもの
 
-- macOS(常駐化とプロファイルを開く処理が macOS 専用です)
+- macOS または Windows(Windows は中継を常駐させず、エージェントが使うときに起動します。Linux は未対応)
 - Node.js 22 以上、[pnpm](https://pnpm.io/)
 - Google Chrome または Microsoft Edge(Chrome 152 / Edge 152 で動作確認)
 
@@ -103,7 +103,7 @@ claude plugin install cdp-relay@cdp-relay
 cdp-relay は、**ログイン済みのブラウザを丸ごと操作できる入口**をローカルに開きます。使う前に [SECURITY.md](SECURITY.md) を読んでください。要点:
 
 - 中継は `127.0.0.1` だけで待ち受けます。LAN やインターネットに公開しないでください(`CDP_RELAY_HOST` を変えない)
-- 既定では、中継の TCP ポートに繋げる**同じ Mac 上のプロセスは、認証なしで**登録済みのブラウザを操作できます(`pnpm daemon:install --client-auth` でトークン必須にできます)
+- 既定では、中継の TCP ポートに繋げる**同じコンピューター上のプロセスは、認証なしで**登録済みのブラウザを操作できます(`pnpm daemon:install --client-auth` でトークン必須にできます)
 - 拡張機能は `debugger` と全サイトへのアクセス権を持ちます。信頼できるエージェントにだけ使わせてください
 
 ## ドキュメント

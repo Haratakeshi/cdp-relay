@@ -10,7 +10,7 @@ Claude Code 用は `plugin/cdp-relay/` に実装済み。ほかのエージェ�
 | 承認待ちで止まらない | Chrome/Edge 144+ の DevTools 直結は接続ごとに承認ダイアログが出る。拡張機能(`chrome.debugger`)と常駐中継を経由する。直結の MCP(chrome-devtools-mcp 等)は使わない |
 | 中継が状態を持ち、MCP は薄い | 操作の実体(セッション・タブ・ref・HumanGate・後始末)は中継の `relay/agent.mjs` にある。MCP サーバーは中継へ渡すだけのシムなので、**どのエージェントでも同じ動作になる**。エージェントごとに作り直すのは「登録の仕方」と「スキルの文面」だけ |
 | 1 MCP プロセス = 1 セッション | エージェントが MCP サーバーを起動すると、最初のツール呼び出しで中継にセッションができる。エージェントの終了(stdin が閉じる)でセッションが終わる |
-| 中継は常駐、入口だけ閉じる | 中継(LaunchAgent)は止めない。拡張との接続は維持し、次の操作もすぐ始められる。セッションが終わると、そのセッションのタブは detach され(ブラウザ上部の「デバッグしています」のバーが消える)、自動処理の対象からも外れる |
+| 中継は常駐、入口だけ閉じる | 中継(macOS は LaunchAgent。Windows は常駐させず、落ちていればシムが起こす)は止めない。拡張との接続は維持し、次の操作もすぐ始められる。セッションが終わると、そのセッションのタブは detach され(ブラウザ上部の「デバッグしています」のバーが消える)、自動処理の対象からも外れる |
 | 自分のタブで作業する | `tab_open` で背面に自分用のタブを開く。ユーザーが見ているタブは奪わない。既存タブを使うのは、ユーザーが指したときの `tab_adopt` だけ |
 | タブの後始末はエージェントが決める | 推奨は「使い終わったら閉じる」。結果を見せたいときは残して人に伝える(HumanGate)。中継は勝手に閉じない(異常終了時も開いたまま人に引き渡す) |
 | HumanGate | 送信・削除・購入などの不可逆操作は人の確認を取ってから。中継も名前で不可逆そうな要素を判定し、`confirmed: true` なしではクリックしない(安全網) |
@@ -26,7 +26,7 @@ Claude Code 用は `plugin/cdp-relay/` に実装済み。ほかのエージェ�
 plugin/cdp-relay/mcp/server.mjs  … シム。Node 22 の標準モジュールだけ(依存なし)。どこにコピーしても動く
   │ 改行区切り JSON、Unix ドメインソケット ~/.cdp-relay/relay-9333.sock(0600 = ファイル権限がローカルの認証)
   ▼
-relay/server.mjs + relay/agent.mjs … 常駐中継(LaunchAgent io.github.haratakeshi.cdp-relay)。セッション・操作の実体
+relay/server.mjs + relay/agent.mjs … 中継(macOS は LaunchAgent io.github.haratakeshi.cdp-relay)。セッション・操作の実体
   │ WebSocket 127.0.0.1:9333/extension
   ▼
 extension/(CDP Relay Bridge)… プロファイルごと。chrome.debugger / chrome.tabs
@@ -67,7 +67,7 @@ extension/(CDP Relay Bridge)… プロファイルごと。chrome.debugger / chr
 
 1. エージェントが MCP サーバーを起動する(プラグインの有効化)。この時点では中継に触れない
 2. 最初のツール呼び出しでソケットに繋ぎ、`session.hello` でセッションを作る。ソケットが無ければ中継を起こす
-   (中継が自分で書く `~/.cdp-relay/relay-9333.json` を見て、launchd の常駐なら `launchctl kickstart`、手で起動したものなら同じ node で起動する)
+   (中継が自分で書く `~/.cdp-relay/relay-9333.json` を見て、launchd の常駐なら `launchctl kickstart`、それ以外は前回と同じ CDP_RELAY_* の設定で起動する。状態ファイルが無く、シムが clone の中にあれば隣の `relay/server.mjs` を起動する)
 3. `tab_open` / `tab_adopt` したタブは、セッション中は attach したまま、エージェントのタブとして自動処理の対象になる
 4. 終わり方は 3 通り
    - `session_end {close_tabs}`: 指定どおり閉じる / 残す。次のツール呼び出しは新しいセッションになる(ハンドルは `t1` から振り直し)
@@ -115,7 +115,7 @@ claude plugin install cdp-relay@cdp-relay
 
 ### 作業
 
-1. **MCP サーバーを登録する**(stdio、`mcpServers` 形式)。`pnpm run setup` がこの Mac の絶対パスを入れた設定を表示する
+1. **MCP サーバーを登録する**(stdio、`mcpServers` 形式)。`pnpm run setup` がこのコンピューターの絶対パスを入れた設定を表示する
 
    ```json
    {
@@ -136,7 +136,7 @@ claude plugin install cdp-relay@cdp-relay
 3. **確かめる**(実ブラウザで。ユーザーの許可を得た範囲で)
    - `browser_list` → `tab_open {browser, url:"https://example.com"}` → `snapshot` → `session_end {close_tabs:true}` でタブが閉じ、ブラウザ上部のバーが消える
    - 途中でエージェントを終了したとき、タブが開いたまま残り、バーが消える
-   - 中継のログ(`~/Library/Logs/cdp-relay.log`)に `agent session N (<クライアント名>): started` と `ended (...)` が出る
+   - 中継のログ(macOS は `~/Library/Logs/cdp-relay.log`、それ以外は `~/.cdp-relay/relay-9333.log`)に `agent session N (<クライアント名>): started` と `ended (...)` が出る
 
 ### エージェントに任せないこと
 
@@ -156,6 +156,7 @@ claude plugin install cdp-relay@cdp-relay
 
 - 背面のタブには CDP のマウス・キー入力が届かない(実ブラウザで実測)。セッションがタブを保持する間は `Emulation.setFocusEmulationEnabled` で visible にして届かせている(タブは前面に出さない)。そのため保持中のタブではページから見て `document.visibilityState === 'visible'`、`document.hasFocus() === true`
 
+- `screenshot` は撮影の直前にスクリーンキャストを一瞬始めて描画を起こす。Windows では背面タブの `Page.captureScreenshot` が直前の撮影や遷移の直後に 20 秒止まるため(windows-latest で実測、`test/exp-screenshot-background.mjs`)
 - 別プロセスの iframe(多くのクロスサイト iframe)は snapshot に中身が出ず、操作できない
 - `select` 以外の値の設定は `Input.insertText`(IME を通らない確定入力)。キーボードショートカットはブラウザのコマンドとしては効かないことがある
 - HumanGate の判定は要素の名前(`policy.json` の `humanGatePattern`)によるので取りこぼしがある。エージェント自身の判断が主

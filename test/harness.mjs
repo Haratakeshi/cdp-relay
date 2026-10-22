@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs
 import { join, resolve } from 'node:path';
 import puppeteer from 'puppeteer-core';
 
-export const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const DEFAULT_CHROME = { darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', win32: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', linux: '/usr/bin/google-chrome' }[process.platform];
+export const CHROME = process.env.CHROME_PATH || DEFAULT_CHROME;
 export const RELAY_PORT = Number(process.env.CDP_RELAY_PORT || 9400); // 常駐中継(既定 9333)と実運用の専用ポートに当たらない帯を使う
 export const RELAY = `http://127.0.0.1:${RELAY_PORT}`;
 const TMP = resolve('tmp');

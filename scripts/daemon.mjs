@@ -1,12 +1,14 @@
 #!/usr/bin/env node
-// 中継サーバーを macOS の LaunchAgent として常駐させる。
+// 中継サーバーを macOS の LaunchAgent として常駐させる。Windows は常駐化せず、中継をバックグラウンドで起動・停止するだけ
+// (ログオン後は、エージェントが最初に使うときに MCP シムが前回と同じ設定で起動する)。
 //   node scripts/daemon.mjs install [--port 9333] [--node /path/to/node] [--token <CDP_RELAY_TOKEN>] [--client-auth]
-//   node scripts/daemon.mjs uninstall | restart | status | log
-import { execFileSync } from 'node:child_process';
-import { chmodSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
+//   node scripts/daemon.mjs uninstall | restart | status | log [--port 9333]
+import { execFileSync, spawn } from 'node:child_process';
+import { chmodSync, writeFileSync, existsSync, unlinkSync, mkdirSync, openSync, readFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { statePath } from '../relay/paths.mjs';
 
 export const LABEL = 'io.github.haratakeshi.cdp-relay';
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -42,7 +44,43 @@ const plist = (node, port, token, clientAuth) => `<?xml version="1.0" encoding="
 </plist>
 `;
 
-const commands = {
+const SERVER = join(REPO, 'relay/server.mjs');
+const readInfo = port => { try { return JSON.parse(readFileSync(statePath('.json', port), 'utf8')); } catch { return null; } };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const relayUp = port => fetch(`http://127.0.0.1:${port}/browsers`).then(() => true, () => false); // 401(クライアント認証あり)も応答あり
+
+/** Windows: 中継を親から切り離して起動する。env は CDP_RELAY_* の設定(他の CDP_RELAY_* は持ち込まない) */
+function startDetached(port, env) {
+  const logFile = statePath('.log', port);
+  mkdirSync(dirname(logFile), { recursive: true });
+  const out = openSync(logFile, 'a');
+  const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('CDP_RELAY_')));
+  spawn(pickNode(), [SERVER], { cwd: REPO, detached: true, windowsHide: true, stdio: ['ignore', out, out], env: { ...base, ...env, CDP_RELAY_PORT: String(port) } }).unref();
+  console.log(`started: ${SERVER} (port ${port}, log ${logFile})`);
+}
+/** Windows: 動いている中継を止める。応答しない(= pid が古い可能性がある)ときは何も殺さない */
+async function stopRelay(port) {
+  const info = readInfo(port);
+  if (!info?.pid || !await relayUp(port)) return console.log('not running');
+  process.kill(info.pid);
+  for (let i = 0; i < 50 && await relayUp(port); i++) await sleep(100);
+  console.log(`stopped: pid ${info.pid}`);
+}
+
+const windowsCommands = {
+  install() {
+    const port = opt('port', '9333');
+    const token = opt('token', '');
+    startDetached(port, { ...(token ? { CDP_RELAY_TOKEN: token } : {}), ...(argv.includes('--client-auth') ? { CDP_RELAY_CLIENT_AUTH: '1' } : {}) });
+    console.log('Windows では常駐化しません。ログオン後は、エージェントが最初に使うときに MCP が同じ設定で起動します');
+  },
+  uninstall: () => stopRelay(opt('port', '9333')),
+  async restart() { const port = opt('port', '9333'); const env = readInfo(port)?.env ?? {}; await stopRelay(port); startDetached(port, env); }, // 前回の設定を引き継ぐ
+  async status() { const port = opt('port', '9333'); const info = readInfo(port); console.log(await relayUp(port) ? `running: pid ${info?.pid} (${info?.server})` : 'not running'); },
+  log() { try { console.log(readFileSync(statePath('.log', opt('port', '9333')), 'utf8').split('\n').slice(-31).join('\n')); } catch { console.log('no log'); } },
+};
+
+const macCommands = {
   install() {
     const node = pickNode();
     const port = opt('port', '9333');
@@ -67,7 +105,9 @@ const commands = {
   log() { execFileSync('tail', ['-n', '30', LOG], { stdio: 'inherit' }); },
 };
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) { // setup.mjs から LABEL だけを読むときは実行しない
+const self = fileURLToPath(import.meta.url);
+if (process.platform === 'win32' ? process.argv[1]?.toLowerCase() === self.toLowerCase() : process.argv[1] === self) { // setup.mjs から読むときは実行しない(Windows はドライブ文字の大小が揃わないことがある)
+  const commands = process.platform === 'win32' ? windowsCommands : macCommands;
   if (!commands[cmd]) { console.error('usage: node scripts/daemon.mjs install|uninstall|restart|status|log [--port 9333] [--node /abs/node] [--token <token>] [--client-auth]'); process.exit(2); }
-  commands[cmd]();
+  await commands[cmd]();
 }
