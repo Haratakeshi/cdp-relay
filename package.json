@@ -1,0 +1,35 @@
+{
+  "name": "cdp-relay",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "ログイン済みの Chrome / Edge を、拡張機能とローカル中継経由で AI エージェント(MCP)に操作させる",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Haratakeshi/cdp-relay.git"
+  },
+  "packageManager": "pnpm@10.12.4",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "relay": "node relay/server.mjs",
+    "daemon:install": "node scripts/daemon.mjs install",
+    "daemon:restart": "node scripts/daemon.mjs restart",
+    "daemon:uninstall": "node scripts/daemon.mjs uninstall",
+    "daemon:status": "node scripts/daemon.mjs status",
+    "daemon:log": "node scripts/daemon.mjs log",
+    "test:e2e": "for t in e2e-relay e2e-page e2e-puppeteer e2e-playwright e2e-multi e2e-mixed e2e-refcount e2e-reconnect e2e-dialogs e2e-downloads e2e-permissions e2e-hardening e2e-unattended e2e-agent; do node test/$t.mjs || exit 1; done",
+    "test:lifetime": "CDP_RELAY_PORT=9410 node test/e2e-lifetime.mjs",
+    "exp:infobar": "node test/exp-infobar.mjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "25.10.0",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

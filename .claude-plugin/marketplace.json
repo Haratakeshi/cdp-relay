@@ -1,0 +1,14 @@
+{
+  "name": "cdp-relay",
+  "description": "ログイン済みの Chrome / Edge を AI エージェントに操作させる cdp-relay のプラグイン",
+  "owner": {
+    "name": "Haratakeshi"
+  },
+  "plugins": [
+    {
+      "name": "cdp-relay",
+      "description": "起動中の Chrome / Edge を拡張機能 + 常駐中継で操作する MCP サーバーとスキル",
+      "source": "./plugin/cdp-relay"
+    }
+  ]
+}

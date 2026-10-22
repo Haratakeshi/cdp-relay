@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CDP Relay Bridge の設定</title>
+<link rel="stylesheet" href="ui.css">
+<style>
+  body { padding: 32px 20px; }
+  main { max-width: 620px; margin: 0 auto; display: grid; gap: 16px; }
+  header.brand img { width: 40px; height: 40px; }
+  header.brand h1 { font-size: 18px; }
+  #status .hint { margin: 8px 0 10px; color: var(--muted); }
+  .actions { display: flex; gap: 10px; align-items: center; margin-top: 16px; }
+  #saved { color: var(--good); font-size: 12px; }
+</style>
+<main>
+  <header class="brand"><img src="icons/icon-128.png" alt=""><div><h1>CDP Relay Bridge</h1><div class="ver" id="ver"></div></div></header>
+  <p class="note" style="margin:0">このブラウザ(プロファイル)を、ローカルの中継サーバー経由で AI エージェントに操作させるための拡張機能です。
+    プロファイルごとに 1 つ読み込み、それぞれに別の名前を付けます。</p>
+
+  <section class="card" id="status">
+    <span class="pill">…</span>
+    <p class="hint"></p>
+    <dl class="kv"></dl>
+    <details><summary>診断情報(JSON)</summary><pre id="raw"></pre></details>
+  </section>
+
+  <section class="card">
+    <form id="form">
+      <label for="name">ブラウザ名(必須)</label>
+      <input id="name" placeholder="例: chrome-personal" autocomplete="off" spellcheck="false">
+      <p class="help">中継サーバー上の識別子。プロファイル・会社ごとに一意にします。同じ名前で別のプロファイルが繋ぐと、後から繋いだ方に置き換わります。設定するまで接続しません。</p>
+
+      <label for="relayUrl">中継サーバー URL</label>
+      <input id="relayUrl" placeholder="ws://127.0.0.1:9333/extension" spellcheck="false">
+      <p class="help">通常は空欄のまま(既定値)。中継を別のポートで動かしたときだけ変えます。</p>
+
+      <label for="port">専用ポート(任意)</label>
+      <input id="port" placeholder="例: 9341" inputmode="numeric">
+      <p class="help">puppeteer の <code>browserURL</code> や chrome-devtools-mcp の <code>--browserUrl</code> のように、<code>/json/version</code> をルートに解決するクライアントで使うときだけ。ブラウザごとに重複しない番号(49152 未満)を指定します。</p>
+
+      <label for="token">共有トークン(任意)</label>
+      <input id="token" type="password" autocomplete="off">
+      <p class="help">中継サーバーを <code>CDP_RELAY_TOKEN</code> 付きで起動したときに同じ値を入れます。</p>
+
+      <div class="actions"><button type="submit">保存して再接続</button><span id="saved"></span></div>
+    </form>
+  </section>
+</main>
+<script type="module" src="options.js"></script>

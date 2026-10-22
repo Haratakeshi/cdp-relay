@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "CDP Relay Bridge",
+  "version": "0.3.0",
+  "description": "起動中の Chrome / Edge を、ローカルの中継サーバー経由で AI エージェントに操作させるブリッジ(cdp-relay)",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "debugger",
+    "tabs",
+    "storage",
+    "alarms",
+    "contentSettings",
+    "downloads",
+    "webRequest",
+    "webRequestAuthProvider"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "CDP Relay Bridge",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "homepage_url": "https://github.com/Haratakeshi/cdp-relay",
+  "minimum_chrome_version": "116"
+}

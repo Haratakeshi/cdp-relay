@@ -1,0 +1,4 @@
+{
+ "chrome-personal": { "app": "chrome", "profile": "Default" },
+ "edge-company-b": { "app": "edge", "profile": "Profile 1" }
+}

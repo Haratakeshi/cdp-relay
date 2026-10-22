@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CDP Relay Bridge</title>
+<link rel="stylesheet" href="ui.css">
+<style>
+  body { width: 340px; padding: 14px; }
+  header.brand { margin-bottom: 12px; }
+  #status .hint { margin: 8px 0 10px; color: var(--muted); font-size: 12px; }
+  #setup { margin-top: 10px; }
+  footer { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; }
+</style>
+<header class="brand"><img src="icons/icon-48.png" alt=""><div><h1>CDP Relay Bridge</h1><div class="ver" id="ver"></div></div></header>
+<section class="card" id="status">
+  <span class="pill">…</span>
+  <p class="hint"></p>
+  <dl class="kv"></dl>
+</section>
+<section class="card" id="setup" hidden>
+  <label for="name">ブラウザ名</label>
+  <div class="row"><input id="name" placeholder="例: chrome-personal" autocomplete="off" spellcheck="false"><button id="save">保存</button></div>
+  <p class="help">このプロファイル(会社・用途)ごとに一意な名前。エージェントはこの名前でブラウザを選びます。</p>
+</section>
+<footer><span class="note">中継: 127.0.0.1 のみ</span><button class="ghost" id="options">詳細設定</button></footer>
+<script type="module" src="popup.js"></script>

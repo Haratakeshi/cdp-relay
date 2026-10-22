@@ -1,0 +1,15 @@
+{
+  "scope": "agentTabs",
+  "dialogTimeoutMs": 8000,
+  "dialogs": { "alert": "accept", "beforeunload": "accept", "confirm": "dismiss", "prompt": "dismiss" },
+  "fileChooser": "intercept",
+  "unresponsiveTimeoutMs": 5000,
+  "unresponsiveTab": "renavigate",
+  "auth": {
+    "https://intra.example.com": { "username": "u", "password": "p" }
+  },
+  "permissions": {
+    "https://meet.google.com": { "camera": "allow", "microphone": "allow" },
+    "https://reports.example.com": { "automaticDownloads": "allow" }
+  }
+}
