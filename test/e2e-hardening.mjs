@@ -10,9 +10,12 @@
 //  - ポリシー: 不正な origin キーは捨てて残りを使い、後始末の clear は必ず送る / タイムアウトの上限 2^31-1 / ポリシーから消した型も clear する
 //  - エージェントのタブの watch(中継自身の attach 参照): attach の往復中に unadopt → 再 adopt しても参照が漏れない / ブラウザ側から detach された
 //    古いページ WS の遅れた close が、後から繋いだクライアントの参照を減らさない(ダイアログを奪わない)/ 次のクライアントの接続で監視が戻る
+//  - クライアント認証(CDP_RELAY_CLIENT_AUTH=1): TCP 側の HTTP / WS / 近道 API / 専用ポートはヘッダのトークンなしで 401。/extension は対象外。
+//    トークンは 0600 のファイルに自動生成して再起動後も同じ値、ログに出さない、CLI は自動で読む
 import http from 'node:http';
 import { WebSocket } from 'ws';
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { chmodSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { startRelay, RELAY, RELAY_PORT, sleep, assert, artifactsDir } from './harness.mjs';
 
@@ -26,9 +29,9 @@ const TAB = 7; // スタブのタブ
 const INFO = { name: 'v', userAgent: 'Mozilla/5.0 Chrome/152.0.0.0', version: '0.2.0', attached: [], features: ['auth', 'downloads', 'contentSettings', 'reload'], contentSettingTypes: ['location', 'notifications', 'camera', 'microphone', 'clipboard', 'popups'] };
 
 /** 拡張のスタブ。受けた呼び出しを calls に残す。gate(m) が Promise を返したら、それが解決するまで応答を保留する(到着順の制御) */
-function stubExtension(name, { origin = 'chrome-extension://stub', token } = {}) {
+function stubExtension(name, { origin = 'chrome-extension://stub', token, port } = {}) {
   const calls = [];
-  const ws = new WebSocket(`ws://127.0.0.1:${RELAY_PORT}/extension?name=${name}${token ? `&token=${token}` : ''}`, origin ? { headers: { Origin: origin } } : {});
+  const ws = new WebSocket(`ws://127.0.0.1:${RELAY_PORT}/extension?name=${name}${token ? `&token=${token}` : ''}${port ? `&port=${port}` : ''}`, origin ? { headers: { Origin: origin } } : {});
   const stub = { ws, calls, gate: undefined };
   ws.on('message', async raw => {
     const m = JSON.parse(raw); calls.push(m);
@@ -205,6 +208,50 @@ try {
   await fetch(adoptW, { method: 'DELETE' }); await sleep(300);
   assert((await attachedW()).length === 0, 'エージェントのタブから外すと detach する');
   ext4.ws.close();
+  relay.stop(); await sleep(300);
+
+  // --- クライアント認証(CDP_RELAY_CLIENT_AUTH=1): TCP 側のクライアントは Authorization: Bearer <トークン> が必要 ---
+  const tokenFile = `tmp/agent-${RELAY_PORT}.client-token`; // harness の CDP_RELAY_SOCKET(tmp/agent-<port>.sock)の隣
+  rmSync(tokenFile, { force: true });
+  relay = await startRelay({ CDP_RELAY_POLICY: policyPath, CDP_RELAY_CLIENT_AUTH: '1' });
+  const DED = RELAY_PORT + 7; // 専用ポート
+  const ext5 = stubExtension('ca', { port: DED }); await ext5.opened; await sleep(400);
+  summary.extensionWithoutClientToken = 'open';
+  const token = readFileSync(tokenFile, 'utf8').trim();
+  assert(/^[0-9a-f]{64}$/.test(token) && (statSync(tokenFile).mode & 0o777) === 0o600, 'トークンを 0600 のファイルに自動生成する(拡張の接続口 /extension はクライアント用トークンなしで繋がる)');
+  const bearer = { authorization: `Bearer ${token}` };
+  const wsBase = RELAY.replace('http', 'ws');
+  const denied = {
+    browsers: await httpStatus('/browsers'),
+    version: await httpStatus('/b/ca/json/version'),
+    list: await httpStatus('/b/ca/json/list'),
+    eval: await httpStatus(`/b/ca/tabs/${TAB}/eval`, { 'content-type': 'application/json' }, 'POST'),
+    cdp: await httpStatus(`/b/ca/tabs/${TAB}/cdp`, { 'content-type': 'application/json' }, 'POST'),
+    wrongToken: await httpStatus('/browsers', { authorization: `Bearer ${'0'.repeat(64)}` }),
+    queryToken: await httpStatus(`/browsers?token=${token}`),
+    wsBrowser: await wsStatus(`${wsBase}/b/ca/devtools/browser`),
+    wsPage: await wsStatus(`${wsBase}/b/ca/devtools/page/${TAB}`),
+    dedicatedHttp: await new Promise(res => http.get({ host: '127.0.0.1', port: DED, path: '/json/version' }, r => { r.resume(); res(r.statusCode); })),
+    dedicatedWs: await wsStatus(`ws://127.0.0.1:${DED}/devtools/browser`),
+  };
+  summary.clientAuthDenied = denied;
+  assert(Object.values(denied).every(s => s === 401 || s === 'HTTP 401'), `トークンなし・違うトークン・クエリ文字列のトークンは、HTTP / WS / 近道 API / 専用ポートのすべてで 401(${JSON.stringify(denied)})`);
+  assert(await httpStatus('/browsers', { ...bearer, Origin: 'https://evil.example' }) === 403, 'Origin 付きの要求は正しいトークンがあっても 403(既存の防御が先)');
+  const allowed = {
+    browsers: await httpStatus('/browsers', bearer),
+    version: await httpStatus('/b/ca/json/version', { authorization: `bearer ${token}` }),
+    wsBrowser: await wsStatus(`${wsBase}/b/ca/devtools/browser`, bearer),
+    dedicatedWs: await wsStatus(`ws://127.0.0.1:${DED}/devtools/browser`, bearer),
+  };
+  summary.clientAuthAllowed = allowed;
+  assert(Object.values(allowed).every(s => s === 200 || s === 'open'), `正しいトークンなら HTTP 200 / WS が開く(scheme の大文字小文字は問わない)(${JSON.stringify(allowed)})`);
+  const cli = await new Promise(res => execFile(process.execPath, ['cli.mjs', 'browsers'], { env: { ...process.env, CDP_RELAY_PORT: String(RELAY_PORT), CDP_RELAY_SOCKET: `tmp/agent-${RELAY_PORT}.sock` } }, (e, stdout) => res({ code: e?.code ?? 0, stdout })));
+  assert(cli.code === 0 && cli.stdout.includes('ca'), `CLI はトークンのファイルを読んで、そのまま使える(exit ${cli.code})`);
+  relay.stop(); await sleep(300);
+  relay = await startRelay({ CDP_RELAY_POLICY: policyPath, CDP_RELAY_CLIENT_AUTH: '1' });
+  assert(readFileSync(tokenFile, 'utf8').trim() === token && await httpStatus('/browsers', bearer) === 200, '中継を再起動しても同じトークンを使う(クライアントの設定を変えなくてよい)');
+  assert(!logSince().includes(token), '中継ログにトークンを出さない');
+  ext5.ws.close();
   console.log('E2E-13 PASS');
 } finally {
   writeFileSync(join(out, 'summary.json'), JSON.stringify(summary, null, 1));

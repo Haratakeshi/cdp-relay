@@ -20,10 +20,12 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { APPS, openProfile, readProfiles as profiles } from './relay/profiles.mjs';
+import { clientAuthHeaders } from './relay/client-token.mjs';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CDP_RELAY_PORT || 9333);
 const BASE = `http://127.0.0.1:${PORT}`;
+const AUTH = clientAuthHeaders(PORT); // 中継がクライアント認証(CDP_RELAY_CLIENT_AUTH=1)なら必要。無ければ空
 const STATE = join(DIR, 'tmp/last-tab.json'); // ブラウザごとの直近操作タブ(--tab 省略時に使う)
 
 const argv = process.argv.slice(2);
@@ -35,10 +37,10 @@ for (let i = 0; i < argv.length; i++) {
 }
 const state = () => { try { return JSON.parse(readFileSync(STATE, 'utf8')); } catch { return {}; } };
 const remember = (name, id) => { mkdirSync(dirname(STATE), { recursive: true }); writeFileSync(STATE, JSON.stringify({ ...state(), [name]: id })); };
-const api = path => fetch(`${BASE}${path}`).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error); return j; });
+const api = path => fetch(`${BASE}${path}`, { headers: AUTH }).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error); return j; });
 const apiPost = (path, body = {}) => fetch(`${BASE}${path}`, {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: { 'Content-Type': 'application/json', ...AUTH },
   body: JSON.stringify(body)
 }).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error); return j; });
 
@@ -82,12 +84,12 @@ async function withTab(name, fn) {
   // 既存タブを選んだら、コマンドの実行中だけ中継の「エージェントのタブ」にする(scope: agentTabs の自動処理の対象)。
   // 元々エージェントのタブでなかったら終了時に外す(ユーザーのタブを自動処理の対象に残さない)。新規タブは中継が自動で登録する
   const adoptUrl = wanted && `${BASE}/b/${encodeURIComponent(name)}/tabs/${wanted.tabId}/adopt`;
-  const adopted = wanted && await fetch(adoptUrl, { method: 'POST' }).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error); return j; });
+  const adopted = wanted && await fetch(adoptUrl, { method: 'POST', headers: AUTH }).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error); return j; });
   try { return await attachAndRun(name, wanted, fn); }
-  finally { if (adopted && !adopted.wasAgent) await fetch(adoptUrl, { method: 'DELETE' }).catch(() => {}); }
+  finally { if (adopted && !adopted.wasAgent) await fetch(adoptUrl, { method: 'DELETE', headers: AUTH }).catch(() => {}); }
 }
 async function attachAndRun(name, wanted, fn) {
-  const browser = await puppeteer.connect({ browserWSEndpoint: `${BASE.replace('http', 'ws')}/b/${encodeURIComponent(name)}/devtools/browser`, defaultViewport: null, protocolTimeout: Number(opts.timeout || 120_000) });
+  const browser = await puppeteer.connect({ browserWSEndpoint: `${BASE.replace('http', 'ws')}/b/${encodeURIComponent(name)}/devtools/browser`, headers: AUTH, defaultViewport: null, protocolTimeout: Number(opts.timeout || 120_000) });
   try {
     const page = wanted ? (await browser.pages()).find(p => p.target()._targetId === wanted.id) : await browser.newPage();
     if (!page) throw new Error(`タブに接続できません: ${wanted.id}`);
@@ -123,7 +125,7 @@ const commands = {
     const out = resolve(pos[0]);
     const name = await browserName();
     const tab = await resolveTab(name);
-    const res = await fetch(`${BASE}/b/${encodeURIComponent(name)}/tabs/${tab.tabId}/shot.png${opts.full ? '?full=1' : ''}`);
+    const res = await fetch(`${BASE}/b/${encodeURIComponent(name)}/tabs/${tab.tabId}/shot.png${opts.full ? '?full=1' : ''}`, { headers: AUTH });
     if (!res.ok) throw new Error(`shot failed: ${res.statusText}`);
     const buf = Buffer.from(await res.arrayBuffer());
     writeFileSync(out, buf);
@@ -132,7 +134,7 @@ const commands = {
   async snap() {
     const name = await browserName();
     const tab = await resolveTab(name);
-    const res = await fetch(`${BASE}/b/${encodeURIComponent(name)}/tabs/${tab.tabId}/snapshot${opts.json ? '?format=json' : ''}`);
+    const res = await fetch(`${BASE}/b/${encodeURIComponent(name)}/tabs/${tab.tabId}/snapshot${opts.json ? '?format=json' : ''}`, { headers: AUTH });
     if (!res.ok) throw new Error(`snapshot failed: ${res.statusText}`);
     const text = await res.text();
     console.log(text);

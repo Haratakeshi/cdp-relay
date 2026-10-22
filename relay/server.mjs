@@ -19,14 +19,14 @@ import http from 'node:http';
 import net from 'node:net';
 import crypto from 'node:crypto';
 import { watchFile, mkdirSync, rmSync, chmodSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { serveBrowserFacade } from './facade.mjs';
 import { Autopilot } from './autopilot.mjs';
 import { getPolicy, POLICY_PATH } from './policy.mjs';
 import { serveAgent } from './agent.mjs';
+import { agentSocketPath, clientTokenPath, ensureClientToken } from './client-token.mjs';
 
 const PORT = Number(process.env.CDP_RELAY_PORT || 9333);
 const HOST = process.env.CDP_RELAY_HOST || '127.0.0.1';
@@ -42,7 +42,9 @@ const normalizeHost = h => {
 };
 const ALLOWED_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', ...(process.env.CDP_RELAY_ALLOWED_HOSTS ?? '').split(',').map(normalizeHost).filter(Boolean)]);
 // エージェント(MCP シム)用の Unix ドメインソケット。ファイル権限(ディレクトリ 700 / ソケット 600)がローカルの認証になる。中継ポートごとに別のパス
-const AGENT_SOCKET = process.env.CDP_RELAY_SOCKET || join(homedir(), '.cdp-relay', `relay-${PORT}.sock`);
+const AGENT_SOCKET = agentSocketPath(PORT);
+// TCP 側のクライアント認証(任意)。有効なら HTTP / WS / 専用ポートに Authorization: Bearer <トークン> を求める。/extension は CDP_RELAY_TOKEN で別に検証する
+const CLIENT_TOKEN = process.env.CDP_RELAY_CLIENT_AUTH === '1' ? ensureClientToken(PORT) : null;
 const POLICY_WATCH_MS = 1000; // policy.json の permissions 変更を接続中のブラウザへ反映する間隔
 export const log = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -215,6 +217,13 @@ function refuse(req, extension = false) {
   }
 }
 
+function clientAuthorized(req) {
+  if (!CLIENT_TOKEN) return true;
+  const m = /^bearer\s+(\S+)$/i.exec(req.headers.authorization ?? '');
+  return !!m && safeCompareToken(m[1], CLIENT_TOKEN);
+}
+const CLIENT_AUTH_ERROR = `client token required: send "Authorization: Bearer <token>" (token file: ${clientTokenPath(PORT)})`;
+
 function resolveLink(name) {
   if (name) return links.get(name);
   return links.size === 1 ? [...links.values()][0] : undefined;
@@ -281,6 +290,7 @@ const httpHandler = fixedLink => async (req, res) => {
   };
   const why = refuse(req);
   if (why) { log(`refused http ${req.method} ${url.pathname}: ${why}`); return json(403, { error: why }); }
+  if (!clientAuthorized(req)) { log(`refused http ${req.method} ${url.pathname}: no valid client token`); return json(401, { error: CLIENT_AUTH_ERROR }); }
 
   try {
     if (!fixedLink && url.pathname === '/browsers') {
@@ -516,6 +526,7 @@ server.on('upgrade', (req, socket, head) => {
     if (!name) return rejectUpgrade(socket, 400, 'name required');
     return wss.handleUpgrade(req, socket, head, ws => registerExtension(name, port, ws));
   }
+  if (!clientAuthorized(req)) { log(`refused upgrade ${url.pathname}: no valid client token`); return rejectUpgrade(socket, 401, 'client token required'); }
   const m = url.pathname.match(/^\/b\/([^/]+)\/devtools\/(browser|page\/(\d+))$/);
   const link = m && links.get(decodeURIComponent(m[1]));
   if (!link) return rejectUpgrade(socket, 404, 'browser not connected');
@@ -550,6 +561,7 @@ function registerExtension(name, port, ws) {
   dedicated.on('upgrade', (req, socket, head) => {
     const why = refuse(req);
     if (why) { log(`refused upgrade on port ${port}: ${why}`); return rejectUpgrade(socket, 403, why); }
+    if (!clientAuthorized(req)) { log(`refused upgrade on port ${port}: no valid client token`); return rejectUpgrade(socket, 401, 'client token required'); }
     const m = new URL(req.url, `http://${HOST}:${port}`).pathname.match(/^\/devtools\/(browser|page\/(\d+))$/);
     if (!m) return rejectUpgrade(socket, 404, 'not found');
     wss.handleUpgrade(req, socket, head, ws2 => serveClient(link, m[1], Number(m[2]), ws2));
@@ -583,7 +595,7 @@ async function servePage(link, tabId, ws) {
 }
 
 server.listen(PORT, HOST, () => {
-  log(`cdp-relay listening on http://${HOST}:${PORT} (token ${TOKEN ? 'required' : 'not set'})`); getPolicy(log);
+  log(`cdp-relay listening on http://${HOST}:${PORT} (extension token ${TOKEN ? 'required' : 'not set'}, client auth ${CLIENT_TOKEN ? `required, token file ${clientTokenPath(PORT)}` : 'off'})`); getPolicy(log);
   // TCP のポートを取れた(= 同じポートの中継は他にいない)ので、前回の中継が残したソケットファイルは消してよい
   mkdirSync(dirname(AGENT_SOCKET), { recursive: true, mode: 0o700 });
   rmSync(AGENT_SOCKET, { force: true });

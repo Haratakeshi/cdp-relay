@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 導入と診断を 1 つにしたコマンド。何度実行してもよい(足りないものだけを入れ、状態と次の一手を表示する)。
-//   pnpm run setup [-- --port 9333] [-- --token <CDP_RELAY_TOKEN>]
+//   pnpm run setup [-- --port 9333] [-- --token <CDP_RELAY_TOKEN>] [-- --client-auth]
 // 1. 前提(macOS / Node 22+ / 依存)を確かめる
 // 2. 常駐中継(LaunchAgent)が未導入・別の場所のリポジトリを指していれば、このリポジトリで入れ直す
 // 3. 中継が応答するのを待ち、接続中のブラウザと拡張のバージョンを確かめる
@@ -11,6 +11,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LABEL, stableNode } from './daemon.mjs';
+import { clientAuthHeaders, clientTokenPath } from '../relay/client-token.mjs';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const argv = process.argv.slice(2);
@@ -31,7 +32,7 @@ const fail = (msg, todo) => { ng(msg); console.log(`\n次にやること: ${todo
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const readInfo = () => { try { return JSON.parse(readFileSync(INFO, 'utf8')); } catch { return null; } };
 const newer = (a, b) => { const [x, y] = [a, b].map(v => String(v).split('.').map(Number)); for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0); return false; };
-const browsers = () => fetch(`http://127.0.0.1:${PORT}/browsers`).then(r => r.json());
+const browsers = () => fetch(`http://127.0.0.1:${PORT}/browsers`, { headers: clientAuthHeaders(PORT) }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
 
 console.log(`cdp-relay setup(${REPO})\n\n[前提]`);
 if (process.platform !== 'darwin') fail(`macOS 専用です(この OS: ${process.platform})`, '中継だけなら `pnpm relay` で手動起動できますが、常駐化とプロファイルを開く機能は macOS のみ対応です');
@@ -46,11 +47,11 @@ if (REPO.startsWith('/Volumes/')) next.push(`リポジトリが外付けボリ�
 console.log('\n[常駐中継]');
 const running = readInfo();
 const before = await browsers().catch(() => null); // 入れ直す前に繋がっていたブラウザ(入れ直した後、再接続を待つ)
-const reachable = !!before;
+const reachable = await fetch(`http://127.0.0.1:${PORT}/browsers`).then(() => true, () => false); // 401(クライアント認証あり)も「動いている」。入れ直して認証を外さない
 if (reachable && running?.server === SERVER && running.launchdLabel === LABEL) ok(`LaunchAgent ${LABEL} で稼働中(127.0.0.1:${PORT})`);
 else {
   if (reachable && running?.server && running.server !== SERVER) console.log(`  … ポート ${PORT} の中継は別の場所(${running.server})から動いています。このリポジトリで入れ直します`);
-  const args = ['install', '--port', String(PORT), ...(opt('token') ? ['--token', opt('token')] : [])];
+  const args = ['install', '--port', String(PORT), ...(opt('token') ? ['--token', opt('token')] : []), ...(argv.includes('--client-auth') ? ['--client-auth'] : [])];
   console.log(`  … node scripts/daemon.mjs ${args.join(' ').replace(/--token \S+/, '--token ***')}`);
   execFileSync(process.execPath, [join(REPO, 'scripts/daemon.mjs'), ...args], { stdio: 'inherit' });
   const deadline = Date.now() + WAIT_MS;
@@ -61,7 +62,7 @@ else {
 }
 
 console.log('\n[ブラウザ(拡張機能)]');
-let list = await browsers();
+let list = await browsers().catch(e => fail(`中継に拒否されました(${e.message})`, `クライアント認証が有効です。トークンのファイル ${clientTokenPath(PORT)} を確認してください(作り直すなら消してから \`pnpm daemon:restart\`)`));
 const missing = () => (before ?? []).filter(b => !list.some(x => x.name === b.name));
 if (missing().length) {
   console.log(`  … 拡張の再接続を待っています(${missing().map(b => b.name).join(', ')}、最大 ${RECONNECT_MS / 1000} 秒)`);

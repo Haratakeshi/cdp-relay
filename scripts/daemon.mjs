@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 中継サーバーを macOS の LaunchAgent として常駐させる。
-//   node scripts/daemon.mjs install [--port 9333] [--node /path/to/node] [--token <CDP_RELAY_TOKEN>]
+//   node scripts/daemon.mjs install [--port 9333] [--node /path/to/node] [--token <CDP_RELAY_TOKEN>] [--client-auth]
 //   node scripts/daemon.mjs uninstall | restart | status | log
 import { execFileSync } from 'node:child_process';
 import { chmodSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
@@ -24,7 +24,7 @@ const tryLaunchctl = (...args) => { try { return launchctl(...args); } catch (e)
 export const stableNode = () => ['/opt/homebrew/bin/node', '/usr/local/bin/node', process.execPath].find(existsSync);
 const pickNode = () => opt('node', stableNode());
 
-const plist = (node, port, token) => `<?xml version="1.0" encoding="UTF-8"?>
+const plist = (node, port, token, clientAuth) => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -33,7 +33,7 @@ const plist = (node, port, token) => `<?xml version="1.0" encoding="UTF-8"?>
   <array><string>${node}</string><string>${join(REPO, 'relay/server.mjs')}</string></array>
   <key>WorkingDirectory</key><string>${REPO}</string>
   <key>EnvironmentVariables</key>
-  <dict><key>CDP_RELAY_PORT</key><string>${port}</string>${token ? `<key>CDP_RELAY_TOKEN</key><string>${token}</string>` : ''}</dict>
+  <dict><key>CDP_RELAY_PORT</key><string>${port}</string>${token ? `<key>CDP_RELAY_TOKEN</key><string>${token}</string>` : ''}${clientAuth ? '<key>CDP_RELAY_CLIENT_AUTH</key><string>1</string>' : ''}</dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>${LOG}</string>
@@ -50,10 +50,11 @@ const commands = {
     tryLaunchctl('bootout', `${DOMAIN}/${LABEL}`); // 既存があれば止める(無ければエラーを無視)
     const token = opt('token', '');
     if (/[<>&]/.test(token)) throw new Error('--token には英数字等を使う(<>& は plist に書けない)');
-    writeFileSync(PLIST, plist(node, port, token), { mode: 0o600 });
+    const clientAuth = argv.includes('--client-auth');
+    writeFileSync(PLIST, plist(node, port, token, clientAuth), { mode: 0o600 });
     chmodSync(PLIST, 0o600); // トークンを含むので本人だけが読める(既存ファイルの上書きでは mode が効かないので明示)
     launchctl('bootstrap', DOMAIN, PLIST);
-    console.log(`installed: ${PLIST}\n  node: ${node}\n  port: ${port}\n  token: ${token ? 'set' : 'not set'}\n  log : ${LOG}`);
+    console.log(`installed: ${PLIST}\n  node: ${node}\n  port: ${port}\n  token: ${token ? 'set' : 'not set'}\n  client auth: ${clientAuth ? 'required' : 'off'}\n  log : ${LOG}`);
   },
   uninstall() {
     console.log(tryLaunchctl('bootout', `${DOMAIN}/${LABEL}`) || 'stopped');
@@ -67,6 +68,6 @@ const commands = {
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) { // setup.mjs から LABEL だけを読むときは実行しない
-  if (!commands[cmd]) { console.error('usage: node scripts/daemon.mjs install|uninstall|restart|status|log [--port 9333] [--node /abs/node] [--token <token>]'); process.exit(2); }
+  if (!commands[cmd]) { console.error('usage: node scripts/daemon.mjs install|uninstall|restart|status|log [--port 9333] [--node /abs/node] [--token <token>] [--client-auth]'); process.exit(2); }
   commands[cmd]();
 }

@@ -160,6 +160,30 @@ echo "$TOKEN"                             # 各プロファイルの拡張のオ
 
 手で起動するなら `CDP_RELAY_TOKEN=$TOKEN pnpm relay`。トークンを設定すると、同じ値を入れていない拡張は接続できなくなる(`closed 403` / `bad token`)。
 
+### クライアント認証(任意)
+
+`CDP_RELAY_CLIENT_AUTH=1` で起動した中継は、TCP 側のクライアント(HTTP の `/browsers` `/json/*` `/events` と近道 API、WS の `devtools/*`、専用ポート)に
+`Authorization: Bearer <トークン>` を求め、無ければ 401 を返す。拡張の接続口 `/extension` は対象外(`CDP_RELAY_TOKEN` で別に検証する)。
+エージェント(MCP)の経路は Unix ソケットなので影響を受けない。
+
+```bash
+pnpm daemon:install --client-auth        # 常駐中継で有効にする(初めて入れるときは pnpm run setup -- --client-auth でも可)
+cat ~/.cdp-relay/relay-9333.client-token  # トークン(初回に中継が生成、0600。再起動しても同じ値)
+```
+
+| クライアント | 渡し方 |
+|---|---|
+| CLI(`cli.mjs`)・`pnpm run setup` | トークンのファイルを自動で読む(設定不要) |
+| Playwright | `chromium.connectOverCDP(url, { headers: { authorization: 'Bearer <トークン>' } })`(`/json/version` の取得と WS の両方に付く) |
+| puppeteer | `puppeteer.connect({ browserURL \| browserWSEndpoint, headers: { authorization: 'Bearer <トークン>' } })`(puppeteer 25 は `browserURL` の `/json/version` にも付ける) |
+| curl | `curl -H "Authorization: Bearer $(cat ~/.cdp-relay/relay-9333.client-token)" http://127.0.0.1:9333/browsers` |
+
+- ヘッダを渡せず URL しか受け付けないツールは使えなくなる
+- トークンは本人だけが読めるファイルにあるので、**同じユーザーで動くプログラムは読めてしまう**。防げるのは、同じ Mac の別の OS ユーザーと、
+  要求は送れるがファイルは読めないもの(サンドボックス内のアプリ、ローカルのサービスを踏み台にした SSRF など)
+- トークンを作り直すには、ファイルを消して中継を再起動する(`pnpm daemon:restart`)。中継は起動時に読んだ値を使い続ける
+- クエリ文字列(`?token=`)では受け付けない(URL はログやプロセス一覧に残りやすいため)
+
 ### 記録
 
 処理した事象は `GET /b/<name>/events`(専用ポートでは `/events`、`?since=<seq>` で差分)に JSON で残り、中継ログにも出る。
@@ -362,8 +386,8 @@ E2E-8 は旧拡張(0.1.0 相当のスタブ)に新しい中継が繋いだとき
   `visibilityState` が `visible` のままになる(実測)。見えないタブの挙動を E2E で確かめるときは `ignoreDefaultArgs` で外す(E2E-14)
 - **テストで CLI を同期実行しない**: テストページを返す HTTP サーバーと同じプロセスから `execFileSync` で `cli.mjs` を呼ぶと、イベントループが止まってページが
   読み込まれず `Navigation timeout of 30000 ms exceeded` になる(実測。2026-09-27 に「背面タブの alert で止まる」と誤認した原因)。`execFile` を使う
-- **クライアント側は無認証**: `CDP_RELAY_TOKEN` は拡張→中継の接続だけを検証する。中継に到達できるプロセスは誰でも
-  (`/json/version` と `devtools/*` WS 経由で)登録済みブラウザをログイン済みセッションごと完全に操作できる。
+- **クライアント側は既定で無認証**: `CDP_RELAY_TOKEN` は拡張→中継の接続だけを検証する。既定では中継に到達できるプロセスは誰でも
+  (`/json/version` と `devtools/*` WS 経由で)登録済みブラウザをログイン済みセッションごと完全に操作できる。塞ぐには下の「クライアント認証(任意)」を有効にする。
   既定の `127.0.0.1` bind のまま使い、外出先からは SSH / Tailscale 等のトンネルで到達させること。`CDP_RELAY_HOST` を
   `0.0.0.0` 等にすると LAN/公開 IP からも無認証で操作可能になるので設定しないこと(このリポジトリでは実験用途に限る)
 
